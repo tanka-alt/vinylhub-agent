@@ -35,7 +35,14 @@ export async function runAgent(sessionId, userMessage) {
     generationConfig: { temperature: 0.4 },
   });
 
-  const chat = model.startChat({ history: getHistory(sessionId) });
+  // IMPORTANT: pass a COPY of the stored history, not the array itself.
+  // The @google/generative-ai SDK mutates the array it's given in place as
+  // the conversation (and any tool calls) progress — if we hand it our
+  // actual stored session array by reference, its internal bookkeeping
+  // (including role:"function" entries from tool calls) leaks straight
+  // into what we persist, eventually corrupting the stored history so the
+  // next request's first entry isn't role:"user" and the API rejects it.
+  const chat = model.startChat({ history: [...getHistory(sessionId)] });
 
   let result = await chat.sendMessage(userMessage);
   let response = result.response;
