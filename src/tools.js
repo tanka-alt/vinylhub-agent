@@ -73,10 +73,15 @@ async function search_albums({ search_term }) {
 
 async function get_albums_by_genre({ genre_slug }) {
   console.log(`[get_albums_by_genre] called with genre_slug="${genre_slug}"`);
+  // .contains() doesn't reliably JSON-encode an array-of-objects value for a
+  // jsonb column (supabase-js has sent malformed payloads for this shape in
+  // the past, which Postgres then rejects with "invalid input syntax for
+  // type json"). Building the jsonb containment filter manually via
+  // .filter(column, "cs", <json string>) sidesteps that encoding entirely.
   const { data, error } = await supabase
     .from(TABLE)
     .select("*")
-    .contains("zanrid", [{ slug: genre_slug }])
+    .filter("zanrid", "cs", JSON.stringify([{ slug: genre_slug }]))
     .limit(10);
 
   if (error) {
