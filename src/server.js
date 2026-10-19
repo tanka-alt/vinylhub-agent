@@ -58,14 +58,20 @@ app.post("/webhook/chat", async (req, res) => {
 
 // Optional utility — not part of the original workflow, but handy for
 // testing: clears one session's memory without restarting the server.
-app.post("/webhook/reset", (req, res) => {
+app.post("/webhook/reset", async (req, res) => {
   const { sessionId } = req.body ?? {};
   if (!sessionId) return res.status(400).json({ error: "sessionId is required" });
-  resetSession(sessionId);
+  await resetSession(sessionId);
   res.json({ ok: true });
 });
 
-const port = Number(process.env.PORT || 3000);
-app.listen(port, () => {
-  console.log(`VinylHub agent listening on :${port}`);
-});
+// On Vercel the platform runs the exported app itself (serverless), so we
+// must not call listen() there. Locally / on Render we still start a server.
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT || 3000);
+  app.listen(port, () => {
+    console.log(`VinylHub agent listening on :${port}`);
+  });
+}
+
+export default app;

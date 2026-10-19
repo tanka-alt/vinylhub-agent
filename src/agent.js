@@ -1,4 +1,5 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { createClient } from "@supabase/supabase-js";
 import { SYSTEM_PROMPT } from "./systemPrompt.js";
 import { toolDeclarations, runTool } from "./tools.js";
 
@@ -14,17 +15,42 @@ const MEMORY_WINDOW = Number(process.env.MEMORY_WINDOW || 10); // messages kept,
 // conversation, not the tool-call scratchpad — and it means trimming the
 // window can never cut a session off in the middle of an unfinished
 // function-call pair, which the Gemini API would reject.
+//
+// Persisted in the Supabase table "chat_sessions" so memory survives
+// serverless cold starts / different instances (Vercel). The in-memory Map
+// below is only a fallback if Supabase is unreachable.
 const sessions = new Map();
 
-function getHistory(sessionId) {
-  return sessions.get(sessionId) ?? [];
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const SESSIONS_TABLE = "chat_sessions";
+
+async function getHistory(sessionId) {
+  const { data, error } = await supabase
+    .from(SESSIONS_TABLE)
+    .select("messages")
+    .eq("session_id", sessionId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[memory] load failed, using in-memory fallback:", error.message);
+    return sessions.get(sessionId) ?? [];
+  }
+  return data?.messages ?? [];
 }
 
-function appendTurn(sessionId, userText, modelText) {
-  const history = getHistory(sessionId);
+async function appendTurn(sessionId, userText, modelText) {
+  const history = await getHistory(sessionId);
   history.push({ role: "user", parts: [{ text: userText }] });
   history.push({ role: "model", parts: [{ text: modelText }] });
-  sessions.set(sessionId, history.slice(-MEMORY_WINDOW));
+  const trimmed = history.slice(-MEMORY_WINDOW);
+  sessions.set(sessionId, trimmed);
+
+  const { error } = await supabase.from(SESSIONS_TABLE).upsert({
+    session_id: sessionId,
+    messages: trimmed,
+    updated_at: new Date().toISOString(),
+  });
+  if (error) console.error("[memory] save failed:", error.message);
 }
 
 export async function runAgent(sessionId, userMessage) {
@@ -42,7 +68,7 @@ export async function runAgent(sessionId, userMessage) {
   // (including role:"function" entries from tool calls) leaks straight
   // into what we persist, eventually corrupting the stored history so the
   // next request's first entry isn't role:"user" and the API rejects it.
-  const chat = model.startChat({ history: [...getHistory(sessionId)] });
+  const chat = model.startChat({ history: [...(await getHistory(sessionId))] });
 
   let result = await chat.sendMessage(userMessage);
   let response = result.response;
@@ -87,10 +113,12 @@ export async function runAgent(sessionId, userMessage) {
   }
 
   const text = response.text();
-  appendTurn(sessionId, userMessage, text);
+  await appendTurn(sessionId, userMessage, text);
   return text;
 }
 
-export function resetSession(sessionId) {
+export async function resetSession(sessionId) {
   sessions.delete(sessionId);
+  const { error } = await supabase.from(SESSIONS_TABLE).delete().eq("session_id", sessionId);
+  if (error) console.error("[memory] reset failed:", error.message);
 }
