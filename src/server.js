@@ -66,13 +66,11 @@ app.post("/webhook/chat", async (req, res) => {
     res.json({ output });
   } catch (err) {
     console.error("Agent error:", err);
-    // Gemini overloaded / rate-limited / model gone, even after retries and
-    // fallback models: show a friendly chat message instead of a raw error,
-    // so visitors don't think the assistant is simply broken.
-    if ([404, 429, 500, 503].includes(err?.status)) {
-      return res.json({ output: overloadedMessage(chatInput) });
-    }
-    res.status(500).json({ error: "Something went wrong. Please try again." });
+    // The AI failed on every model, even after retries and fallbacks (most often
+    // Gemini overload): show a friendly chat message instead of a raw error, so
+    // visitors don't think the assistant is simply broken. The real cause is in
+    // the log line above ("Agent error:").
+    res.json({ output: overloadedMessage(chatInput) });
   }
 });
 

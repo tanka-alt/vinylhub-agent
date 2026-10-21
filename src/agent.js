@@ -151,10 +151,11 @@ export async function runAgent(sessionId, userMessage) {
       return text;
     } catch (err) {
       lastError = err;
-      // Only switch model for "this model is busy / rate-limited / gone" errors;
-      // anything else (bad API key, bug in our code) would fail on every model.
-      if (![404, 429, 500, 503].includes(err?.status)) throw err;
-      console.log(`[agent] model ${modelName} failed with ${err.status}, trying next fallback`);
+      // Any failure (busy, rate-limited, gone, blocked/empty reply...) moves on
+      // to the next model; the full error is still logged here and in server.js.
+      console.log(
+        `[agent] model ${modelName} failed (status ${err?.status ?? "none"}): ${String(err?.message || err).slice(0, 200)}`
+      );
     }
   }
   throw lastError;
