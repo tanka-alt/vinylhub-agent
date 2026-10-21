@@ -19,6 +19,20 @@ app.use(
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+const MESSAGE_ET =
+  "Vabandame! VinylHub on prototüüp ja Gemini assistent on hetkel ülekoormatud. Palun proovi mõne minuti pärast uuesti.";
+const MESSAGE_EN =
+  "Sorry! VinylHub is a prototype and the Gemini assistant is currently overloaded. Please try again in a few minutes.";
+
+// Very small language guess: Estonian unless the message clearly looks English.
+// (The shop is Estonian, so Estonian is the default for short/unclear messages.)
+function overloadedMessage(text) {
+  const t = String(text).toLowerCase();
+  const looksEstonian = /[õäöüšž]|\b(kas|mis|teil|ja|ei|palun|tere|mul|sul|kuidas|miks|kus|aitäh|tänan|ma|sa|või|ning)\b/.test(t);
+  const looksEnglish = /\b(the|you|do|does|have|what|is|are|hi|hello|please|thanks|how|why|where|can|could|i|my|your|any)\b/.test(t);
+  return looksEnglish && !looksEstonian ? MESSAGE_EN : MESSAGE_ET;
+}
+
 // Matches the request shape the @n8n/chat widget (and n8n's Chat Trigger
 // node) sends: { action, sessionId, chatInput }.
 //
@@ -52,6 +66,12 @@ app.post("/webhook/chat", async (req, res) => {
     res.json({ output });
   } catch (err) {
     console.error("Agent error:", err);
+    // Gemini overloaded / rate-limited / model gone, even after retries and
+    // fallback models: show a friendly chat message instead of a raw error,
+    // so visitors don't think the assistant is simply broken.
+    if ([404, 429, 500, 503].includes(err?.status)) {
+      return res.json({ output: overloadedMessage(chatInput) });
+    }
     res.status(500).json({ error: "Something went wrong. Please try again." });
   }
 });

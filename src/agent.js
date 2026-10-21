@@ -5,6 +5,15 @@ import { toolDeclarations, runTool } from "./tools.js";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
+// If the main model is overloaded (503) or gone (404), try these in order.
+// Override with a comma-separated GEMINI_FALLBACK_MODELS env variable.
+const FALLBACK_MODELS = (
+  process.env.GEMINI_FALLBACK_MODELS ?? "gemini-3.6-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const MODELS = [...new Set([MODEL_NAME, ...FALLBACK_MODELS])];
 const MEMORY_WINDOW = Number(process.env.MEMORY_WINDOW || 10); // messages kept, not exchanges
 
 // sessionId -> [{role:"user",parts:[{text}]}, {role:"model",parts:[{text}]}, ...]
@@ -55,7 +64,7 @@ async function appendTurn(sessionId, userText, modelText) {
 
 // Gemini sometimes answers 503 ("high demand") or 429 (rate limit) for a few
 // seconds at a time. Retry a few times with a growing pause before giving up.
-async function sendWithRetry(chat, message, attempts = 4) {
+async function sendWithRetry(chat, message, attempts = 2) {
   for (let i = 1; ; i++) {
     try {
       return await chat.sendMessage(message);
@@ -69,9 +78,9 @@ async function sendWithRetry(chat, message, attempts = 4) {
   }
 }
 
-export async function runAgent(sessionId, userMessage) {
+async function runWithModel(modelName, history, userMessage) {
   const model = genAI.getGenerativeModel({
-    model: MODEL_NAME,
+    model: modelName,
     systemInstruction: SYSTEM_PROMPT,
     tools: [{ functionDeclarations: toolDeclarations }],
     generationConfig: { temperature: 0.4 },
@@ -84,7 +93,7 @@ export async function runAgent(sessionId, userMessage) {
   // (including role:"function" entries from tool calls) leaks straight
   // into what we persist, eventually corrupting the stored history so the
   // next request's first entry isn't role:"user" and the API rejects it.
-  const chat = model.startChat({ history: [...(await getHistory(sessionId))] });
+  const chat = model.startChat({ history: [...history] });
 
   let result = await sendWithRetry(chat, userMessage);
   let response = result.response;
@@ -128,9 +137,27 @@ export async function runAgent(sessionId, userMessage) {
     );
   }
 
-  const text = response.text();
-  await appendTurn(sessionId, userMessage, text);
-  return text;
+  return response.text();
+}
+
+export async function runAgent(sessionId, userMessage) {
+  const history = await getHistory(sessionId);
+
+  let lastError;
+  for (const modelName of MODELS) {
+    try {
+      const text = await runWithModel(modelName, history, userMessage);
+      await appendTurn(sessionId, userMessage, text);
+      return text;
+    } catch (err) {
+      lastError = err;
+      // Only switch model for "this model is busy / rate-limited / gone" errors;
+      // anything else (bad API key, bug in our code) would fail on every model.
+      if (![404, 429, 500, 503].includes(err?.status)) throw err;
+      console.log(`[agent] model ${modelName} failed with ${err.status}, trying next fallback`);
+    }
+  }
+  throw lastError;
 }
 
 export async function resetSession(sessionId) {
