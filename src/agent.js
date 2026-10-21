@@ -53,6 +53,22 @@ async function appendTurn(sessionId, userText, modelText) {
   if (error) console.error("[memory] save failed:", error.message);
 }
 
+// Gemini sometimes answers 503 ("high demand") or 429 (rate limit) for a few
+// seconds at a time. Retry a few times with a growing pause before giving up.
+async function sendWithRetry(chat, message, attempts = 4) {
+  for (let i = 1; ; i++) {
+    try {
+      return await chat.sendMessage(message);
+    } catch (err) {
+      const retryable = [429, 500, 503].includes(err?.status);
+      if (!retryable || i >= attempts) throw err;
+      const waitMs = 1000 * 2 ** (i - 1); // 1s, 2s, 4s
+      console.log(`[agent] Gemini ${err.status}, retry ${i}/${attempts - 1} in ${waitMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+  }
+}
+
 export async function runAgent(sessionId, userMessage) {
   const model = genAI.getGenerativeModel({
     model: MODEL_NAME,
@@ -70,7 +86,7 @@ export async function runAgent(sessionId, userMessage) {
   // next request's first entry isn't role:"user" and the API rejects it.
   const chat = model.startChat({ history: [...(await getHistory(sessionId))] });
 
-  let result = await chat.sendMessage(userMessage);
+  let result = await sendWithRetry(chat, userMessage);
   let response = result.response;
 
   // The agent may call a tool, read the result, then call another tool
@@ -102,7 +118,7 @@ export async function runAgent(sessionId, userMessage) {
       });
     }
 
-    result = await chat.sendMessage(functionResponseParts);
+    result = await sendWithRetry(chat, functionResponseParts);
     response = result.response;
   }
 
